@@ -2,6 +2,10 @@ import React from 'react';
 
 export enum GamePhase {
   INTRO = 'INTRO',
+  
+  // Level 2 Specific
+  TIMBER = 'TIMBER',
+
   CLAMPING = 'CLAMPING',
   MARKING = 'MARKING',
   CUTTING = 'CUTTING',        // Front of Bottom Board
@@ -25,86 +29,21 @@ export interface GameState {
 }
 
 // Augment JSX namespace to recognize R3F elements.
-// We declare both React.JSX (for React 18+) and global JSX (legacy/global) 
-// to ensure compatibility across different TypeScript configurations.
+// We provide a catch-all index signature to IntrinsicElements to support
+// all React Three Fiber elements (mesh, group, geometries, materials, etc.)
+// without needing to list them exhaustively.
 
-declare module 'react' {
+declare global {
   namespace JSX {
     interface IntrinsicElements {
-      // Core
-      group: any;
-      mesh: any;
-      scene: any;
-      color: any;
-      
-      // Geometries
-      boxGeometry: any;
-      planeGeometry: any;
-      sphereGeometry: any;
-      cylinderGeometry: any;
-      torusGeometry: any;
-      extrudeGeometry: any;
-      edgesGeometry: any;
-      
-      // Materials
-      meshStandardMaterial: any;
-      meshBasicMaterial: any;
-      lineBasicMaterial: any;
-      
-      // Lights
-      ambientLight: any;
-      pointLight: any;
-      directionalLight: any;
-      
-      // Helpers
-      gridHelper: any;
-      axesHelper: any;
-      
-      // Lines
-      lineSegments: any;
-      
-      // Catch-all
       [elemName: string]: any;
     }
   }
 }
 
-declare global {
+declare module 'react' {
   namespace JSX {
     interface IntrinsicElements {
-      // Core
-      group: any;
-      mesh: any;
-      scene: any;
-      color: any;
-      
-      // Geometries
-      boxGeometry: any;
-      planeGeometry: any;
-      sphereGeometry: any;
-      cylinderGeometry: any;
-      torusGeometry: any;
-      extrudeGeometry: any;
-      edgesGeometry: any;
-      
-      // Materials
-      meshStandardMaterial: any;
-      meshBasicMaterial: any;
-      lineBasicMaterial: any;
-      
-      // Lights
-      ambientLight: any;
-      pointLight: any;
-      directionalLight: any;
-      
-      // Helpers
-      gridHelper: any;
-      axesHelper: any;
-      
-      // Lines
-      lineSegments: any;
-      
-      // Catch-all
       [elemName: string]: any;
     }
   }

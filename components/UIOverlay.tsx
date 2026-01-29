@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { GamePhase } from '../types';
-import { ArrowRight, Hammer, CheckCircle, Package, Star } from 'lucide-react';
+import { ArrowRight, Hammer, CheckCircle, Package, Trees } from 'lucide-react';
 
 interface UIOverlayProps {
   phase: GamePhase;
@@ -8,10 +8,11 @@ interface UIOverlayProps {
   progress: number;
   level: number;
   inventory: string[];
+  rawWoodCount: number;
   onCollect: () => void;
 }
 
-export const UIOverlay: React.FC<UIOverlayProps> = ({ phase, onNext, progress, level, inventory, onCollect }) => {
+export const UIOverlay: React.FC<UIOverlayProps> = ({ phase, onNext, progress, level, inventory, rawWoodCount, onCollect }) => {
   const [showSuccessPrompt, setShowSuccessPrompt] = useState(false);
 
   useEffect(() => {
@@ -38,25 +39,48 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ phase, onNext, progress, l
           </p>
         </div>
 
-        {/* Inventory Widget */}
-        {inventory.length > 0 && (
-            <div className="bg-white/90 backdrop-blur shadow-lg rounded-2xl p-3 border-b-4 border-blue-500 flex flex-col gap-2">
-                <h3 className="text-xs font-bold text-blue-800 uppercase tracking-wide flex items-center gap-1">
-                    <Package className="w-4 h-4" /> Workshop Inventory
-                </h3>
-                <div className="flex gap-2">
-                    {inventory.map((item, i) => (
-                        <div key={i} className="w-12 h-12 bg-slate-100 rounded-lg border border-slate-300 flex items-center justify-center text-xs text-center p-1 leading-tight shadow-inner" title={item}>
-                             {item.includes("Box") ? "📦" : "🪑"}
-                        </div>
-                    ))}
+        {/* Right Side Panel: Inventory & Raw Materials */}
+        <div className="flex flex-col gap-2 items-end">
+            {/* Raw Material Panel */}
+            {rawWoodCount > 0 && (
+                 <div className="bg-white/90 backdrop-blur shadow-lg rounded-2xl p-3 border-b-4 border-green-600 flex flex-col gap-2 min-w-[120px]">
+                     <h3 className="text-xs font-bold text-green-800 uppercase tracking-wide flex items-center gap-1">
+                        <Trees className="w-4 h-4" /> Raw Material
+                     </h3>
+                     <div className="flex items-center gap-2">
+                         <div className="w-10 h-10 bg-amber-200 rounded-full flex items-center justify-center text-lg border border-amber-400">🪵</div>
+                         <div className="font-bold text-slate-700 text-lg">
+                             +{rawWoodCount}
+                         </div>
+                     </div>
+                 </div>
+            )}
+
+            {/* Inventory Widget */}
+            {inventory.length > 0 && (
+                <div className="bg-white/90 backdrop-blur shadow-lg rounded-2xl p-3 border-b-4 border-blue-500 flex flex-col gap-2">
+                    <h3 className="text-xs font-bold text-blue-800 uppercase tracking-wide flex items-center gap-1">
+                        <Package className="w-4 h-4" /> Inventory
+                    </h3>
+                    <div className="flex gap-2">
+                        {inventory.map((item, i) => (
+                            <div key={i} className="w-12 h-12 bg-slate-100 rounded-lg border border-slate-300 flex items-center justify-center text-xs text-center p-1 leading-tight shadow-inner" title={item}>
+                                {item.includes("Box") ? "📦" : "🪑"}
+                            </div>
+                        ))}
+                    </div>
                 </div>
-            </div>
-        )}
+            )}
+        </div>
       </div>
 
       {/* Central Instructions / Progress */}
       <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-none text-center w-full">
+         {phase === GamePhase.TIMBER && (
+           <div className="bg-black/50 text-white px-4 py-2 rounded-full animate-bounce inline-block">
+             Right-click to rotate saw. Drag to cut trees!
+           </div>
+         )}
          {phase === GamePhase.CLAMPING && (
            <div className="bg-black/50 text-white px-4 py-2 rounded-full animate-bounce inline-block">
              Tap the Clamp to tighten!
@@ -75,7 +99,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ phase, onNext, progress, l
       </div>
 
       {/* Footer Controls */}
-      <div className="w-full flex justify-center pb-8 pointer-events-auto">
+      <div className={`w-full flex ${phase === GamePhase.SUCCESS ? 'justify-end items-end pr-8 pb-8' : 'justify-center pb-8'} pointer-events-auto`}>
         {phase === GamePhase.INTRO && (
           <button 
             onClick={onNext}
@@ -123,15 +147,16 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ phase, onNext, progress, l
 const getBoxInstructions = (phase: GamePhase) => {
     switch(phase) {
         case GamePhase.INTRO: return "Welcome! Let's build a Dovetail Box.";
-        case GamePhase.CLAMPING: return "Step 1: Secure the base board.";
-        case GamePhase.MARKING: return "Step 2: Mark the tails pattern.";
-        case GamePhase.CUTTING: return "Step 3: Cut the sockets for the Front.";
+        case GamePhase.TIMBER: return "Step 1: Harvest Timber. Cut the trees!";
+        case GamePhase.CLAMPING: return "Step 2: Secure the base board.";
+        case GamePhase.MARKING: return "Step 3: Mark the tails pattern.";
+        case GamePhase.CUTTING: return "Step 4: Cut the sockets for the Front.";
         case GamePhase.ASSEMBLY_PREP: return "Front sockets ready!";
-        case GamePhase.ASSEMBLY: return "Step 4: Attach the Front Board.";
-        case GamePhase.CUTTING_BACK: return "Step 5: Now cut sockets for the Back.";
-        case GamePhase.ASSEMBLY_C: return "Step 6: Attach the Back Board.";
-        case GamePhase.CUTTING_TOP: return "Step 7: Prepare the Top Lid.";
-        case GamePhase.ASSEMBLY_D: return "Step 8: Cap it off with the Top.";
+        case GamePhase.ASSEMBLY: return "Step 5: Attach the Front Board.";
+        case GamePhase.CUTTING_BACK: return "Step 6: Now cut sockets for the Back.";
+        case GamePhase.ASSEMBLY_C: return "Step 7: Attach the Back Board.";
+        case GamePhase.CUTTING_TOP: return "Step 8: Prepare the Top Lid.";
+        case GamePhase.ASSEMBLY_D: return "Step 9: Cap it off with the Top.";
         case GamePhase.SUCCESS: return "Congratulations! A sturdy box structure.";
         default: return "";
     }

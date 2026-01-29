@@ -7,15 +7,20 @@ import { UIOverlay } from './components/UIOverlay';
 const App: React.FC = () => {
   const [phase, setPhase] = useState<GamePhase>(GamePhase.INTRO);
   const [progress, setProgress] = useState(0);
-  const [level, setLevel] = useState(1); // 1 = Box, 2 = Stool
+  const [level, setLevel] = useState(1); // 1 = Box (starts with Timber), 2 = Stool
   const [inventory, setInventory] = useState<string[]>([]);
+  const [rawWoodCount, setRawWoodCount] = useState(0);
 
   // Helper to advance phases
   const nextPhase = () => {
-    // === LEVEL 1: DOVETAIL BOX ===
+    // === LEVEL 1: DOVETAIL BOX (Now includes Timber) ===
     if (level === 1) {
       switch (phase) {
         case GamePhase.INTRO:
+          setPhase(GamePhase.TIMBER);
+          setRawWoodCount(0); // Reset for new game
+          break;
+        case GamePhase.TIMBER:
           setPhase(GamePhase.CLAMPING);
           break;
         case GamePhase.CLAMPING:
@@ -43,6 +48,9 @@ const App: React.FC = () => {
           break;
         case GamePhase.SUCCESS:
           // Controlled by UI Overlay 'Collect' button
+          break;
+        default:
+          setPhase(GamePhase.INTRO);
           break;
       }
     } 
@@ -79,11 +87,14 @@ const App: React.FC = () => {
          setLevel(2);
          setPhase(GamePhase.INTRO);
          setProgress(0);
+         // Keep raw wood count for immersion or reset if consumed
      } else {
          setInventory([...inventory, "Wooden Stool"]);
          // Loop or finish
          setPhase(GamePhase.INTRO);
          setProgress(0);
+         setRawWoodCount(0);
+         setLevel(1); // Restart loop
      }
   };
 
@@ -98,6 +109,8 @@ const App: React.FC = () => {
             setProgress={setProgress}
             onPhaseComplete={nextPhase} 
             level={level}
+            rawWoodCount={rawWoodCount}
+            setRawWoodCount={setRawWoodCount}
           />
         </Canvas>
       </div>
@@ -109,6 +122,7 @@ const App: React.FC = () => {
         progress={progress}
         level={level}
         inventory={inventory}
+        rawWoodCount={rawWoodCount}
         onCollect={handleCollectAndNext}
       />
     </div>

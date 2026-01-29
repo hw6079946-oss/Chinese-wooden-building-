@@ -12,9 +12,11 @@ interface ExperienceProps {
   setProgress: (val: number) => void;
   onPhaseComplete: () => void;
   level: number;
+  rawWoodCount?: number;
+  setRawWoodCount?: (val: number) => void;
 }
 
-export const Experience: React.FC<ExperienceProps> = ({ phase, progress, setProgress, onPhaseComplete, level }) => {
+export const Experience: React.FC<ExperienceProps> = ({ phase, progress, setProgress, onPhaseComplete, level, rawWoodCount, setRawWoodCount }) => {
   const controlsRef = useRef<any>(null);
   const [orbitEnabled, setOrbitEnabled] = useState(true);
   
@@ -39,7 +41,7 @@ export const Experience: React.FC<ExperienceProps> = ({ phase, progress, setProg
 
       {/* Main Content */}
       <group position={[0, -1, 0]}>
-        <WorkshopTable />
+        {phase !== GamePhase.TIMBER && <WorkshopTable />}
         <WoodProject 
           phase={phase} 
           progress={progress} 
@@ -47,6 +49,8 @@ export const Experience: React.FC<ExperienceProps> = ({ phase, progress, setProg
           onPhaseComplete={onPhaseComplete}
           setOrbitEnabled={setOrbitEnabled}
           level={level}
+          rawWoodCount={rawWoodCount}
+          setRawWoodCount={setRawWoodCount}
         />
       </group>
 
@@ -59,9 +63,9 @@ export const Experience: React.FC<ExperienceProps> = ({ phase, progress, setProg
         enableDamping
         dampingFactor={0.05}
         minDistance={2}
-        maxDistance={20}
+        maxDistance={25}
         minPolarAngle={0}
-        maxPolarAngle={Math.PI}
+        maxPolarAngle={Math.PI / 1.8}
         onStart={() => {
             setAutoMoving(false);
         }}
@@ -109,6 +113,10 @@ function useCamAnimation(phase: GamePhase, controlsRef: React.MutableRefObject<a
             targetPos.current.set(0, 6, 10);
             targetLook.current.set(0, 0, 0);
             break;
+        case GamePhase.TIMBER:
+            targetPos.current.set(0, 6, 12);
+            targetLook.current.set(0, 2, 0);
+            break;
         case GamePhase.CLAMPING:
             targetPos.current.set(2, 4, 4);
             targetLook.current.set(0, 0.5, 0);
@@ -143,6 +151,10 @@ function useCamAnimation(phase: GamePhase, controlsRef: React.MutableRefObject<a
             targetPos.current.set(-5, 4, 5); 
             targetLook.current.set(0, 1, -1.5);
             break;
+        default:
+             targetPos.current.set(0, 6, 10);
+             targetLook.current.set(0, 0, 0);
+             break;
         }
     }
 

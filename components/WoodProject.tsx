@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useMemo, useImperativeHandle, forwardRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { useCursor, Edges } from '@react-three/drei';
+import { useCursor, Edges, Html } from '@react-three/drei';
+import { useSpring, animated, config } from '@react-spring/three';
 import * as THREE from 'three';
 import { GamePhase } from '../types';
-import { Clamp, Mallet } from './Tools';
+import { Clamp, Mallet, Chainsaw } from './Tools';
 import { RouterTool } from './RouterTool';
 
 interface WoodProjectProps {
@@ -13,14 +14,19 @@ interface WoodProjectProps {
   onPhaseComplete: () => void;
   setOrbitEnabled: (enabled: boolean) => void;
   level: number;
+  rawWoodCount?: number;
+  setRawWoodCount?: (val: number) => void;
 }
+
+// Fix for "Type instantiation is excessively deep and possibly infinite" error
+const AnimatedGroup = animated.group as any;
 
 // --- Configuration ---
 const NUM_TAILS = 4;
-const BOARD_WIDTH = 2; // Width along X
+const BOARD_WIDTH = 2; 
 const BOARD_THICKNESS = 0.4; 
 const JOINT_HEIGHT = 0.4;    
-const BOARD_LENGTH_B = 3; // Length along Z
+const BOARD_LENGTH_B = 3; 
 const BOARD_HEIGHT_A = 2.5; 
 const TABLE_OFFSET = 0.00;
 const GAP_HEIGHT = 0.15;
@@ -49,17 +55,81 @@ const COLOR_TAILS = "#dcb280";
 const COLOR_WASTE = "#ef4444"; 
 const COLOR_EDGES = "#5c3a21";
 
-// --- Particle System Interface ---
 interface SawdustSystemHandle {
     spawnBurst: (position: THREE.Vector3) => void;
     clear: () => void;
 }
 
-export const WoodProject: React.FC<WoodProjectProps> = ({ phase, progress, setProgress, onPhaseComplete, setOrbitEnabled, level }) => {
+// --- Helper: Generate Tree Ring Texture ---
+function createTreeRingTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return new THREE.CanvasTexture(canvas);
+
+    // Background (Heartwood)
+    ctx.fillStyle = '#6d4c41'; 
+    ctx.fillRect(0, 0, 256, 256);
+
+    // Rings
+    const centerX = 128;
+    const centerY = 128;
+    ctx.strokeStyle = '#5d4037'; // Darker ring line
+    ctx.lineWidth = 2;
+
+    for (let r = 5; r < 120; r += 4 + Math.random() * 3) {
+        ctx.beginPath();
+        // Make rings slightly irregular
+        for (let a = 0; a <= Math.PI * 2; a += 0.1) {
+            const rOffset = r + (Math.sin(a * 10) + Math.cos(a * 5)) * 1.5;
+            const x = centerX + Math.cos(a) * rOffset;
+            const y = centerY + Math.sin(a) * rOffset;
+            if (a === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+    }
+
+    // Cracks/Details
+    ctx.strokeStyle = '#3e2723';
+    ctx.lineWidth = 1;
+    for(let i=0; i<5; i++) {
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY);
+        const angle = Math.random() * Math.PI * 2;
+        ctx.lineTo(centerX + Math.cos(angle)*100, centerY + Math.sin(angle)*100);
+        ctx.stroke();
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    return texture;
+}
+
+const treeRingTexture = createTreeRingTexture();
+
+
+// --- Main Component ---
+export const WoodProject: React.FC<WoodProjectProps> = ({ phase, progress, setProgress, onPhaseComplete, setOrbitEnabled, level, rawWoodCount, setRawWoodCount }) => {
   const [hovered, setHover] = useState(false);
   useCursor(hovered);
   const sawdustRef = useRef<SawdustSystemHandle>(null);
 
+  // === Timber Stage (Now Shared/Moved to Level 1 Start) ===
+  if (phase === GamePhase.TIMBER) {
+      return (
+          <TimberStage 
+            phase={phase}
+            onPhaseComplete={onPhaseComplete}
+            setOrbitEnabled={setOrbitEnabled}
+            sawdustRef={sawdustRef}
+            setRawWoodCount={setRawWoodCount}
+          />
+      );
+  }
+
+  // === LEVEL 2: WOODEN STOOL ===
   if (level === 2) {
       return (
           <StoolProject 
@@ -73,7 +143,7 @@ export const WoodProject: React.FC<WoodProjectProps> = ({ phase, progress, setPr
       );
   }
 
-  // === LEVEL 1: DOVETAIL BOX IMPLEMENTATION ===
+  // === LEVEL 1: DOVETAIL BOX (Default) ===
   return (
       <BoxProject 
         phase={phase}
@@ -87,14 +157,252 @@ export const WoodProject: React.FC<WoodProjectProps> = ({ phase, progress, setPr
 };
 
 // =========================================================
-// LEVEL 2: STOOL PROJECT
+// STAGE: TIMBER
+// =========================================================
+
+function TimberStage({ onPhaseComplete, setOrbitEnabled, sawdustRef, setRawWoodCount }: any) {
+    const [treesCut, setTreesCut] = useState([false, false]);
+    const [cutProgress, setCutProgress] = useState([0, 0]); 
+    const [fallRotation, setFallRotation] = useState([0, 0]); 
+    const [saplingWarning, setSaplingWarning] = useState<{show: boolean, pos: [number, number, number]}>({show: false, pos: [0,0,0]});
+
+    const trees = useMemo(() => [
+        { id: 0, x: -3, z: -2 },
+        { id: 1, x: 3, z: 0 },
+    ], []);
+
+    const saplings = useMemo(() => [
+        { x: -4.5, z: -3 },
+        { x: -1.5, z: -1 },
+        { x: 4.5, z: 1.5 },
+        { x: 1.5, z: 0.5 },
+        { x: -2, z: 2 },
+    ], []);
+
+    const handleCut = (sawPos: THREE.Vector3) => {
+        let changed = false;
+        const newProgress = [...cutProgress];
+        const newTreesCut = [...treesCut];
+        const newFallRotations = [...fallRotation];
+        
+        // Check saplings first
+        let hittingSapling = false;
+        for (const sapling of saplings) {
+            const dist = new THREE.Vector2(sawPos.x, sawPos.z).distanceTo(new THREE.Vector2(sapling.x, sapling.z));
+            if (dist < 0.8 && sawPos.y < 1.5) {
+                hittingSapling = true;
+                setSaplingWarning({ show: true, pos: [sapling.x, 2, sapling.z] });
+                break;
+            }
+        }
+        if (!hittingSapling) {
+            setSaplingWarning(prev => prev.show ? { ...prev, show: false } : prev);
+        }
+
+        // Check big trees
+        trees.forEach((tree, idx) => {
+             if (!newTreesCut[idx] && !hittingSapling) {
+                 const dist = new THREE.Vector2(sawPos.x, sawPos.z).distanceTo(new THREE.Vector2(tree.x, tree.z));
+                 const heightValid = sawPos.y > 0 && sawPos.y < 3;
+
+                 if (dist < 1.2 && heightValid) { 
+                     newProgress[idx] = Math.min(100, newProgress[idx] + 2); 
+                     changed = true;
+
+                     if (Math.random() > 0.8) {
+                        sawdustRef.current?.spawnBurst(new THREE.Vector3(tree.x + (Math.random()-0.5)*0.5, 0.5, tree.z + (Math.random()-0.5)*0.5));
+                     }
+
+                     if (newProgress[idx] >= 100) {
+                         newTreesCut[idx] = true;
+                         const dirX = tree.x - sawPos.x;
+                         const dirZ = tree.z - sawPos.z;
+                         const angle = Math.atan2(dirX, dirZ);
+                         newFallRotations[idx] = angle;
+                         setRawWoodCount((prev: number) => prev + 1);
+                     }
+                 }
+             }
+        });
+
+        if (changed) {
+            setCutProgress(newProgress);
+            setTreesCut(newTreesCut);
+            setFallRotation(newFallRotations);
+            if (newTreesCut.every(t => t)) {
+                setTimeout(onPhaseComplete, 3500); // Give time for tree to fall
+            }
+        }
+    };
+
+    return (
+        <group>
+             <SawdustSystem ref={sawdustRef} />
+             
+             {/* Ground */}
+             <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, -0.05, 0]} receiveShadow>
+                 <planeGeometry args={[30, 30]} />
+                 <meshStandardMaterial color="#3f6212" roughness={0.9} />
+             </mesh>
+
+             {/* Big Trees */}
+             {trees.map((t, i) => (
+                 <Tree 
+                    key={i} 
+                    position={[t.x, 0, t.z]} 
+                    isCut={treesCut[i]} 
+                    progress={cutProgress[i]} 
+                    fallRotation={fallRotation[i]}
+                 />
+             ))}
+
+             {/* Small Saplings */}
+             {saplings.map((s, i) => (
+                 <Sapling key={i} position={[s.x, 0, s.z]} />
+             ))}
+
+             {/* Warning Popup */}
+             {saplingWarning.show && (
+                 <Html position={saplingWarning.pos as any} center>
+                     <div className="bg-red-600/90 text-white px-3 py-2 rounded-lg text-sm font-bold whitespace-nowrap shadow-xl border border-red-400 animate-pulse">
+                         🚫 Too small! Not ready for harvest.<br/>
+                         <span className="text-xs font-normal">不能砍伐还没有到砍伐的时间</span>
+                     </div>
+                 </Html>
+             )}
+
+             <Chainsaw 
+                position={[0, 1, 2]} 
+                onDragStart={() => setOrbitEnabled(false)}
+                onDragEnd={() => setOrbitEnabled(true)}
+                onCut={handleCut}
+             />
+        </group>
+    )
+}
+
+const Sapling: React.FC<{position: [number, number, number]}> = ({position}) => {
+    // Sway animation
+    const swayRef = useRef<THREE.Group>(null);
+    useFrame(({clock}) => {
+        if (swayRef.current) {
+            swayRef.current.rotation.z = Math.sin(clock.elapsedTime * 2 + position[0]) * 0.05;
+        }
+    });
+
+    return (
+        <group position={position} ref={swayRef}>
+             <mesh position={[0, 0.4, 0]} castShadow>
+                 <cylinderGeometry args={[0.05, 0.08, 0.8, 6]} />
+                 <meshStandardMaterial color="#5d4037" roughness={0.9} />
+             </mesh>
+             <mesh position={[0, 1.0, 0]} castShadow>
+                 <coneGeometry args={[0.4, 1.2, 8]} />
+                 <meshStandardMaterial color="#65a30d" roughness={0.8} />
+             </mesh>
+             {/* Dirt pile */}
+             <mesh position={[0, 0.02, 0]}>
+                 <circleGeometry args={[0.3, 8]} />
+                 <meshStandardMaterial color="#3e2723" />
+             </mesh>
+        </group>
+    );
+};
+
+const Tree: React.FC<{position: [number, number, number], isCut: boolean, progress: number, fallRotation?: number}> = ({ position, isCut, progress, fallRotation = 0 }) => {
+    const { rotX } = useSpring({
+        rotX: isCut ? Math.PI / 2 + 0.1 : 0, // Fall slightly more than 90 deg to hit ground
+        config: { mass: 10, tension: 40, friction: 20 } 
+    });
+
+    const groupRef = useRef<THREE.Group>(null);
+    useFrame((state) => {
+        if (progress > 0 && !isCut && groupRef.current) {
+             groupRef.current.position.x = Math.sin(state.clock.elapsedTime * 30) * 0.05 * (progress / 100);
+        } else if (groupRef.current) {
+            groupRef.current.position.x = 0;
+        }
+    });
+
+    const trunkRadius = 0.5;
+
+    return (
+        <group position={position}>
+            {/* Trunk Stump (stays) */}
+            <mesh position={[0, 0.2, 0]} castShadow receiveShadow>
+                 <cylinderGeometry args={[trunkRadius, trunkRadius * 1.2, 0.4, 16]} />
+                 <meshStandardMaterial color="#3e2723" roughness={0.9} />
+            </mesh>
+            
+            {/* Stump Ring Texture (Visible only when cut) */}
+            {isCut && (
+                <mesh position={[0, 0.401, 0]} rotation={[-Math.PI/2, 0, 0]} receiveShadow>
+                    <circleGeometry args={[trunkRadius, 32]} />
+                    <meshStandardMaterial map={treeRingTexture} color="#d7ccc8" roughness={0.8} />
+                </mesh>
+            )}
+
+            {/* Cutting Indicator / Progress */}
+            {!isCut && (
+                <group position={[0, 0.5, 0]} rotation={[-Math.PI/2, 0, 0]}>
+                    <ringGeometry args={[trunkRadius + 0.1, trunkRadius + 0.15, 32]} />
+                    <meshBasicMaterial color={progress > 0 ? "#fbbf24" : "red"} opacity={0.8} transparent />
+                    {progress > 0 && (
+                        <mesh position={[0,0,-0.01]} rotation={[0,0,0]}>
+                            <ringGeometry args={[trunkRadius + 0.1, trunkRadius + 0.15, 32, 1, 0, (progress/100) * Math.PI * 2]} />
+                            <meshBasicMaterial color="#ef4444" toneMapped={false} />
+                        </mesh>
+                    )}
+                </group>
+            )}
+
+            {/* Pivot Group for Fall Direction (Y Axis) */}
+            <group rotation-y={fallRotation}>
+                {/* Falling Part (X Axis Animation) */}
+                <AnimatedGroup 
+                    ref={groupRef}
+                    rotation-x={rotX} 
+                    position={[0, 0.2, 0]}
+                >
+                     {/* Cut Surface on Falling Trunk (Bottom) */}
+                     {isCut && (
+                        <mesh position={[0, 0.201, 0]} rotation={[Math.PI/2, 0, 0]}>
+                            <circleGeometry args={[trunkRadius * 0.95, 32]} />
+                            <meshStandardMaterial map={treeRingTexture} color="#d7ccc8" roughness={0.8} />
+                        </mesh>
+                     )}
+
+                     {/* Main Trunk */}
+                     <mesh position={[0, 2.5, 0]} castShadow receiveShadow>
+                         <cylinderGeometry args={[trunkRadius * 0.7, trunkRadius, 5, 16]} />
+                         <meshStandardMaterial color="#5d4037" roughness={0.9} />
+                     </mesh>
+                     {/* Leaves */}
+                     <group position={[0, 4, 0]}>
+                          <mesh position={[0, 0, 0]} castShadow>
+                              <coneGeometry args={[2, 4, 8]} />
+                              <meshStandardMaterial color="#166534" roughness={0.8} />
+                          </mesh>
+                          <mesh position={[0, 1.5, 0]} castShadow>
+                              <coneGeometry args={[1.5, 3, 8]} />
+                              <meshStandardMaterial color="#15803d" roughness={0.8} />
+                          </mesh>
+                     </group>
+                </AnimatedGroup>
+            </group>
+        </group>
+    )
+}
+
+// =========================================================
+// PROJECT: STOOL (Level 2)
 // =========================================================
 
 const STOOL_SEAT_RADIUS = 1.2;
 const STOOL_SEAT_THICK = 0.3;
-const LEG_RADIUS = 0.15;
-const LEG_HEIGHT = 2.5;
-// Positions for 4 legs (X, Z)
+const LEG_RADIUS = 0.12; 
+const HOLE_RADIUS = 0.13;
+const LEG_HEIGHT = 3.5; 
 const LEG_POSITIONS = [
     { x: 0.6, z: 0.6 },
     { x: -0.6, z: 0.6 },
@@ -102,15 +410,18 @@ const LEG_POSITIONS = [
     { x: -0.6, z: -0.6 },
 ];
 
-const StoolProject: React.FC<any> = ({ phase, progress, setProgress, onPhaseComplete, setOrbitEnabled, sawdustRef }) => {
+function StoolProject({ phase, progress, setProgress, onPhaseComplete, setOrbitEnabled, sawdustRef }: any) {
     const [holesDrilled, setHolesDrilled] = useState([false, false, false, false]);
     const [legsState, setLegsState] = useState<'hidden' | 'dragging' | 'hammering' | 'done'>('hidden');
     const [hammerTaps, setHammerTaps] = useState(0);
     const legsRef = useRef<THREE.Group>(null);
 
-    // --- Interaction Handlers ---
+    const { stoolRotation, stoolY } = useSpring({
+        stoolRotation: phase === GamePhase.SUCCESS ? [0, 0, 0] : [Math.PI, 0, 0],
+        stoolY: phase === GamePhase.SUCCESS ? 3.65 : STOOL_SEAT_THICK / 2, 
+        config: { mass: 2, tension: 120, friction: 24 }
+    });
 
-    // 1. Clamping
     const handleClampClick = () => {
         if (phase === GamePhase.CLAMPING) {
             setProgress(1);
@@ -118,19 +429,23 @@ const StoolProject: React.FC<any> = ({ phase, progress, setProgress, onPhaseComp
         }
     };
 
-    // 2. Cutting (Drilling Holes)
-    const handleDrill = (xPos: number) => {
+    const handleDrill = (toolX: number, toolZ: number) => {
         if (phase !== GamePhase.CUTTING) return;
-        
+
         let changed = false;
         const newHoles = [...holesDrilled];
-
+        
         LEG_POSITIONS.forEach((leg, idx) => {
             if (!newHoles[idx]) {
-                if (Math.abs(xPos - leg.x) < 0.3) {
+                const targetWorldZ = -leg.z; 
+                const targetWorldX = leg.x;
+
+                const dist = Math.sqrt(Math.pow(toolX - targetWorldX, 2) + Math.pow(toolZ - targetWorldZ, 2));
+                
+                if (dist < 0.25) {
                      newHoles[idx] = true;
                      changed = true;
-                     sawdustRef.current?.spawnBurst(new THREE.Vector3(leg.x, STOOL_SEAT_THICK + 0.1, leg.z));
+                     sawdustRef.current?.spawnBurst(new THREE.Vector3(targetWorldX, 0.3, targetWorldZ));
                 }
             }
         });
@@ -138,12 +453,11 @@ const StoolProject: React.FC<any> = ({ phase, progress, setProgress, onPhaseComp
         if (changed) {
             setHolesDrilled(newHoles);
             if (newHoles.every(h => h)) {
-                setTimeout(onPhaseComplete, 500);
+                setTimeout(onPhaseComplete, 800);
             }
         }
     };
 
-    // 3. Assembly (Legs)
     useEffect(() => {
         if (phase === GamePhase.ASSEMBLY) {
             setLegsState('dragging');
@@ -151,22 +465,23 @@ const StoolProject: React.FC<any> = ({ phase, progress, setProgress, onPhaseComp
         }
     }, [phase]);
 
+    // Legs insertion logic
     const handleLegDrag = (e: any) => {
         if (legsState !== 'dragging' || !legsRef.current) return;
         e.stopPropagation();
         setOrbitEnabled(false);
-        const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+        const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0); 
         const point = new THREE.Vector3();
         e.ray.intersectPlane(dragPlane, point);
 
-        const targetY = 0; // Seat bottom
-        const stopY = targetY + 0.5; // Gap
-        const currentY = Math.max(stopY, Math.min(point.y, 4));
+        const worldMaxY = 5.0; 
+        const worldMinY = 0.5;
+        const clampedWorldY = Math.max(worldMinY, Math.min(point.y, worldMaxY));
         
-        legsRef.current.position.y = currentY;
+        legsRef.current.position.y = -clampedWorldY;
 
-        if (currentY <= stopY + 0.1) {
-            legsRef.current.position.y = stopY;
+        if (clampedWorldY <= worldMinY + 0.1) {
+            legsRef.current.position.y = -worldMinY; // Lock position
             setLegsState('hammering');
             setOrbitEnabled(true);
         }
@@ -177,13 +492,15 @@ const StoolProject: React.FC<any> = ({ phase, progress, setProgress, onPhaseComp
         const newTaps = hammerTaps + 1;
         setHammerTaps(newTaps);
         
-        const startY = 0.5;
-        const endY = 0; // Flush with bottom of seat
-        const progress = newTaps / 3;
+        // World Y targets
+        const startWorldY = 0.5;
+        const endWorldY = 0.05; 
+        const progress = newTaps / HAMMER_TAPS_REQUIRED;
+        const currentWorldY = startWorldY - ((startWorldY - endWorldY) * progress);
         
-        legsRef.current.position.y = startY - (startY * progress);
+        legsRef.current.position.y = -currentWorldY; // Inverted local
 
-        if (newTaps >= 3) {
+        if (newTaps >= HAMMER_TAPS_REQUIRED) {
             setLegsState('done');
             setTimeout(onPhaseComplete, 600);
         }
@@ -202,72 +519,91 @@ const StoolProject: React.FC<any> = ({ phase, progress, setProgress, onPhaseComp
          (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
     };
     
-    // Position for Stool Hammer: Striking bottom of legs (which are pointing up in this view?)
-    // Actually seat is inverted?
-    // "Seat (Upside Down for work)" -> Rotated PI X.
-    // Legs attached to bottom (now Top).
-    // So we are hammering legs DOWN into seat.
-    // Target Y = LEG_HEIGHT + Gap.
-    // Mallet should strike down.
-    
-    const hammerPosStool: [number, number, number] = [-1.5, LEG_HEIGHT + 1.8, 0];
-    const hammerRotStool: [number, number, number] = [0, 0, -Math.PI/2];
+    // Hammer position in World Space
+    const hammerPosStool: [number, number, number] = [0, 2.5, 0];
 
     return (
         <group>
             <SawdustSystem ref={sawdustRef} />
 
-            {/* --- SEAT (Upside Down for work) --- */}
-            <group position={[0, STOOL_SEAT_THICK/2, 0]}>
-                 <mesh castShadow receiveShadow rotation={[Math.PI, 0, 0]}>
-                     <cylinderGeometry args={[STOOL_SEAT_RADIUS, STOOL_SEAT_RADIUS, STOOL_SEAT_THICK, 32]} />
-                     <meshStandardMaterial color={COLOR_PINS} roughness={0.6} />
-                 </mesh>
-                 {/* Holes Visuals */}
-                 {LEG_POSITIONS.map((pos, i) => (
-                     <group key={i} position={[pos.x, STOOL_SEAT_THICK/2 + 0.01, pos.z]} rotation={[Math.PI/2, 0, 0]}>
-                         <mesh visible={holesDrilled[i]}>
-                             <circleGeometry args={[LEG_RADIUS]} />
-                             <meshStandardMaterial color="#3f2e20" />
-                         </mesh>
-                         {!holesDrilled[i] && phase === GamePhase.CUTTING && (
-                             <mesh>
-                                 <ringGeometry args={[LEG_RADIUS, LEG_RADIUS + 0.05]} />
-                                 <meshBasicMaterial color="red" />
-                             </mesh>
-                         )}
-                     </group>
-                 ))}
-            </group>
+            <AnimatedGroup 
+                position-y={stoolY} 
+                rotation={stoolRotation}
+            >
+                {/* SEAT */}
+                <group>
+                     <mesh castShadow receiveShadow>
+                         <cylinderGeometry args={[STOOL_SEAT_RADIUS, STOOL_SEAT_RADIUS, STOOL_SEAT_THICK, 32]} />
+                         <meshStandardMaterial color={COLOR_PINS} roughness={0.6} />
+                     </mesh>
+                     
+                     {/* MARKINGS & HOLES on Local -Y face (which is UP when inverted) */}
+                     {LEG_POSITIONS.map((pos, i) => (
+                         <group 
+                            key={i} 
+                            position={[pos.x, -STOOL_SEAT_THICK/2 - 0.001, pos.z]} 
+                            rotation={[Math.PI/2, 0, 0]} // Face -Y
+                        >
+                             
+                             {/* Red Ring Marker */}
+                             {!holesDrilled[i] && phase === GamePhase.CUTTING && (
+                                 <mesh>
+                                     <ringGeometry args={[HOLE_RADIUS, HOLE_RADIUS + 0.03, 32]} />
+                                     <meshBasicMaterial color="red" side={THREE.DoubleSide} toneMapped={false} />
+                                 </mesh>
+                             )}
 
-            {/* --- LEGS --- */}
-            {(phase === GamePhase.ASSEMBLY || phase === GamePhase.SUCCESS) && (
-                <group 
-                    ref={legsRef} 
-                    position={[0, 4, 0]} 
-                    onPointerDown={handleDragStart}
-                    onPointerMove={handleLegDrag}
-                    onPointerUp={handleDragEnd}
-                >
-                    {LEG_POSITIONS.map((pos, i) => (
-                         <mesh key={i} position={[pos.x, LEG_HEIGHT/2, pos.z]} castShadow receiveShadow>
-                             <cylinderGeometry args={[LEG_RADIUS, LEG_RADIUS * 0.8, LEG_HEIGHT, 16]} />
-                             <meshStandardMaterial color={COLOR_TAILS} roughness={0.6} />
-                         </mesh>
-                    ))}
-                    {/* Ghost highlight for dragging */}
-                    {legsState === 'dragging' && (
-                         <mesh position={[0, LEG_HEIGHT/2, 0]} visible={false}>
-                              <boxGeometry args={[3, 3, 3]} /> 
-                         </mesh>
-                    )}
+                             {/* Blind Hole Visual */}
+                             {holesDrilled[i] && (
+                                 <group>
+                                     <mesh position={[0, 0, 0.01]}> 
+                                         <circleGeometry args={[HOLE_RADIUS, 32]} />
+                                         <meshStandardMaterial color="#1a1a1a" roughness={1} />
+                                     </mesh>
+                                     {/* Inner walls simulation */}
+                                     <mesh position={[0, 0, -0.1]}>
+                                         <cylinderGeometry args={[HOLE_RADIUS, HOLE_RADIUS, 0.2, 32, 1, true]} />
+                                         <meshStandardMaterial color="#3f2e20" side={THREE.BackSide} />
+                                     </mesh>
+                                 </group>
+                             )}
+                         </group>
+                     ))}
                 </group>
-            )}
+
+                {/* LEGS */}
+                {(phase === GamePhase.ASSEMBLY || phase === GamePhase.SUCCESS) && (
+                    <group 
+                        ref={legsRef} 
+                        position={[0, -4, 0]} // Start at World Y=4 (Local -4)
+                        onPointerDown={handleDragStart}
+                        onPointerMove={handleLegDrag}
+                        onPointerUp={handleDragEnd}
+                    >
+                        {LEG_POSITIONS.map((pos, i) => (
+                             <group key={i} position={[pos.x, 0, pos.z]}>
+                                 {/* Leg extending "down" in local space (which is UP in inverted world) */}
+                                 <mesh position={[0, -LEG_HEIGHT/2, 0]} castShadow receiveShadow>
+                                     <cylinderGeometry args={[LEG_RADIUS, LEG_RADIUS * 0.8, LEG_HEIGHT, 16]} />
+                                     <meshStandardMaterial color={COLOR_TAILS} roughness={0.6} />
+                                 </mesh>
+                             </group>
+                        ))}
+                        
+                        {legsState === 'dragging' && (
+                             <mesh position={[0, -1, 0]} visible={false}>
+                                  <boxGeometry args={[4, 4, 4]} /> 
+                             </mesh>
+                        )}
+                    </group>
+                )}
+            </AnimatedGroup>
 
             {/* --- TOOLS --- */}
+            
             {phase === GamePhase.CLAMPING && (
                 <Clamp 
-                    position={[1.5, 0, 1.2]} 
+                    position={[1.8, 0, 1.2]} 
                     isClamped={progress === 1} 
                     onClick={handleClampClick} 
                     onPointerOver={() => {}} onPointerOut={() => {}}
@@ -277,7 +613,8 @@ const StoolProject: React.FC<any> = ({ phase, progress, setProgress, onPhaseComp
             {phase === GamePhase.CUTTING && (
                 <RouterTool 
                     phase={phase}
-                    onCut={handleDrill}
+                    variant="drill"
+                    onCut={handleDrill} 
                     zBackPosition={0} 
                     onInteractionStart={() => setOrbitEnabled(false)}
                     onInteractionEnd={() => setOrbitEnabled(true)}
@@ -287,44 +624,45 @@ const StoolProject: React.FC<any> = ({ phase, progress, setProgress, onPhaseComp
             {legsState === 'hammering' && (
                 <Mallet 
                     position={hammerPosStool}
-                    rotation={hammerRotStool}
+                    rotation={[0, 0, -Math.PI/2]}
                     onClick={handleHammer}
+                    onDragStart={() => setOrbitEnabled(false)}
+                    onDragEnd={() => setOrbitEnabled(true)}
                 />
             )}
         </group>
     );
-};
+}
 
 // =========================================================
-// LEVEL 1: DOVETAIL BOX (Existing Logic Wrapped)
+// PROJECT: DOVETAIL BOX (Level 1)
 // =========================================================
 
-const BoxProject: React.FC<any> = (props) => {
+function BoxProject(props: any) {
     const { phase, progress, setProgress, onPhaseComplete, setOrbitEnabled, sawdustRef } = props;
     
-    // ... Copy of the existing state logic from previous WoodProject ...
+    // Refs
     const tailBoardARef = useRef<THREE.Group>(null);
     const tailBoardCRef = useRef<THREE.Group>(null);
     const topBoardDRef = useRef<THREE.Group>(null);
 
+    // State
     const [wastesCutBFront, setWastesCutBFront] = useState<boolean[]>(() => new Array(NUM_TAILS).fill(false));
     const [wastesCutBBack, setWastesCutBBack] = useState<boolean[]>(() => new Array(NUM_TAILS).fill(false));
     const [wastesCutD, setWastesCutD] = useState<boolean[]>(() => new Array(NUM_TAILS).fill(false));
-
     const [assemblyState, setAssemblyState] = useState<'dragging' | 'hammering' | 'done'>('dragging');
     const [hammerTaps, setHammerTaps] = useState(0);
-
     const [hovered, setHover] = useState(false);
     useCursor(hovered);
 
     const handleClampClick = () => {
         if (phase === GamePhase.CLAMPING) {
-        setProgress(1);
-        setTimeout(onPhaseComplete, 600);
+            setProgress(1);
+            setTimeout(onPhaseComplete, 600);
         }
     };
 
-    const handleCut = (xPos: number) => {
+    const handleCut = (xPos: number, zPos: number) => {
         const threshold = TAIL_WIDTH_TIP / 1.5;
         let targetState: boolean[] = [];
         let setTargetState: React.Dispatch<React.SetStateAction<boolean[]>> = () => {};
@@ -352,20 +690,20 @@ const BoxProject: React.FC<any> = (props) => {
         const yBase = (phase === GamePhase.CUTTING_TOP) ? 5.4 : 0.4;
 
         TAIL_CENTERS.forEach((center, index) => {
-        if (!newWastes[index] && Math.abs(xPos - center) < threshold) {
-            newWastes[index] = true;
-            changed = true;
-            if (sawdustRef.current) {
-                sawdustRef.current.spawnBurst(new THREE.Vector3(center, yBase, zBase));
+            if (!newWastes[index] && Math.abs(xPos - center) < threshold) {
+                newWastes[index] = true;
+                changed = true;
+                if (sawdustRef.current) {
+                    sawdustRef.current.spawnBurst(new THREE.Vector3(center, yBase, zBase));
+                }
             }
-        }
         });
 
         if (changed) {
-        setTargetState(newWastes);
-        if (newWastes.every(w => w)) {
-            onPhaseComplete();
-        }
+            setTargetState(newWastes);
+            if (newWastes.every(w => w)) {
+                onPhaseComplete();
+            }
         }
     };
 
@@ -412,7 +750,6 @@ const BoxProject: React.FC<any> = (props) => {
     };
 
     useEffect(() => {
-        // Reset logic when phase changes
         if (phase === GamePhase.INTRO) {
             setWastesCutBFront(new Array(NUM_TAILS).fill(false));
             setWastesCutBBack(new Array(NUM_TAILS).fill(false));
@@ -438,27 +775,9 @@ const BoxProject: React.FC<any> = (props) => {
 
     const getHammerConfig = (): {pos: [number, number, number], rot: [number, number, number]} | null => {
         if (assemblyState !== 'hammering') return null;
-        
-        // Horizontal orientation: Handle along X, Head along Y (Down).
-        // Rot: [0, 0, -Math.PI/2] (Handle +X).
-        // Head is at +1.6 X (End of handle). Faces are Up/Down.
-        // We want pivot at Left. Head at Center.
-        // Board center X=0.
-        // Pivot X = -1.6.
-        // Height: Above board.
-        
-        if (phase === GamePhase.ASSEMBLY) {
-             // Front Board Top ~ 2.65
-             return { pos: [-1.4, 3.8, 0.5], rot: [0, 0, -Math.PI/2] };
-        }
-        if (phase === GamePhase.ASSEMBLY_C) {
-             // Back Board Top ~ 2.65
-             return { pos: [-1.4, 3.8, zPosBack - 0.5], rot: [0, 0, -Math.PI/2] };
-        }
-        if (phase === GamePhase.ASSEMBLY_D) {
-             // Top Board Face ~ 5.4
-             return { pos: [-1.4, 6.6, 0], rot: [0, 0, -Math.PI/2] };
-        }
+        if (phase === GamePhase.ASSEMBLY) return { pos: [-1.4, 3.5, 0.5], rot: [0, 0, -Math.PI/2] };
+        if (phase === GamePhase.ASSEMBLY_C) return { pos: [-1.4, 3.5, zPosBack - 0.5], rot: [0, 0, -Math.PI/2] };
+        if (phase === GamePhase.ASSEMBLY_D) return { pos: [-1.4, 4.0, 0], rot: [0, 0, -Math.PI/2] };
         return null;
     };
     const hammerConfig = getHammerConfig();
@@ -466,8 +785,6 @@ const BoxProject: React.FC<any> = (props) => {
     return (
         <group>
             <SawdustSystem ref={sawdustRef} />
-            
-            {/* Box Components */}
             <group position={[0, TABLE_OFFSET, 0]}>
                 <PinBoardMesh doubleSided />
                 {TAIL_CENTERS.map((center, index) => (
@@ -477,34 +794,25 @@ const BoxProject: React.FC<any> = (props) => {
                     <WasteBlock key={`bb-${index}`} position={[center, 0, zPosBack]} visible={!wastesCutBBack[index]} isMarked={showMarksBack} />
                 ))}
             </group>
-
             <group ref={tailBoardARef} position={[0, 2.5, 0]} 
-                onPointerDown={(e) => phase === GamePhase.ASSEMBLY && handleAssemblyDragStart(e)}
+                onPointerDown={(e) => phase === GamePhase.ASSEMBLY && handleAssemblyDrag(e, tailBoardARef, TABLE_OFFSET)} // Changed to Drag start logic if needed, or simplified
                 onPointerMove={(e) => phase === GamePhase.ASSEMBLY && handleAssemblyDrag(e, tailBoardARef, TABLE_OFFSET)}
-                onPointerUp={(e) => phase === GamePhase.ASSEMBLY && handleAssemblyEnd(e)}
                 visible={phase !== GamePhase.CLAMPING && phase !== GamePhase.MARKING && phase !== GamePhase.CUTTING}
             >
                 <TailBoardMesh />
             </group>
-
              <group ref={tailBoardCRef} position={[0, 2.5, zPosBack]} 
-                onPointerDown={(e) => phase === GamePhase.ASSEMBLY_C && handleAssemblyDragStart(e)}
                 onPointerMove={(e) => phase === GamePhase.ASSEMBLY_C && handleAssemblyDrag(e, tailBoardCRef, TABLE_OFFSET)}
-                onPointerUp={(e) => phase === GamePhase.ASSEMBLY_C && handleAssemblyEnd(e)}
                 visible={[GamePhase.CUTTING_BACK, GamePhase.ASSEMBLY_C, GamePhase.CUTTING_TOP, GamePhase.ASSEMBLY_D, GamePhase.SUCCESS].includes(phase)}
             >
                 <TailBoardMesh />
             </group>
-
              <group ref={topBoardDRef} position={[0, 5, 0]} 
-                onPointerDown={(e) => phase === GamePhase.ASSEMBLY_D && handleAssemblyDragStart(e)}
                 onPointerMove={(e) => phase === GamePhase.ASSEMBLY_D && handleAssemblyDrag(e, topBoardDRef, yPosTop)}
-                onPointerUp={(e) => phase === GamePhase.ASSEMBLY_D && handleAssemblyEnd(e)}
                 visible={[GamePhase.CUTTING_TOP, GamePhase.ASSEMBLY_D, GamePhase.SUCCESS].includes(phase)}
             >
                  <PinBoardMesh doubleSided />
             </group>
-            
             {phase === GamePhase.CUTTING_TOP && topBoardDRef.current && (
                 <group position={[0, 5, 0]}> 
                      {TAIL_CENTERS.map((center, index) => (
@@ -515,39 +823,37 @@ const BoxProject: React.FC<any> = (props) => {
                      ))}
                 </group>
             )}
-
-            {/* Tools */}
             {phase === GamePhase.CLAMPING && (
-                <Clamp position={[1.2, 0.0, 1.0]} isClamped={progress === 1} onClick={handleClampClick} onPointerOver={() => setHover(true)} onPointerOut={() => setHover(false)} />
+                <Clamp 
+                    position={[1.2, 0, -1.1]} // Adjusted position
+                    rotation={[0, Math.PI, 0]} // Adjusted rotation
+                    isClamped={progress === 1} 
+                    onClick={handleClampClick} 
+                    onPointerOver={() => setHover(true)} 
+                    onPointerOut={() => setHover(false)} 
+                />
             )}
             {hammerConfig && (
                 <Mallet position={hammerConfig.pos} rotation={hammerConfig.rot} onClick={() => {
                     if (phase === GamePhase.ASSEMBLY) handleHammerClick(TABLE_OFFSET, tailBoardARef);
                     if (phase === GamePhase.ASSEMBLY_C) handleHammerClick(TABLE_OFFSET, tailBoardCRef);
                     if (phase === GamePhase.ASSEMBLY_D) handleHammerClick(yPosTop, topBoardDRef);
-                }} />
+                }} 
+                onDragStart={() => setOrbitEnabled(false)}
+                onDragEnd={() => setOrbitEnabled(true)}
+                />
             )}
             {(phase === GamePhase.CUTTING || phase === GamePhase.CUTTING_BACK || phase === GamePhase.CUTTING_TOP) && (
                 <RouterTool phase={phase} onCut={handleCut} zBackPosition={phase === GamePhase.CUTTING_BACK ? zPosBack : 0} onInteractionStart={() => setOrbitEnabled(false)} onInteractionEnd={() => setOrbitEnabled(true)} />
             )}
         </group>
     );
-
-    function handleAssemblyDragStart(e: any) {
-        if (assemblyState !== 'dragging') return;
-        e.stopPropagation();
-        setOrbitEnabled(false);
-        (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-    }
-    function handleAssemblyEnd(e: any) {
-        e.stopPropagation();
-        setOrbitEnabled(true);
-        (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
-    }
 }
 
+// =========================================================
+// HELPERS & PARTS (Unchanged from original styles)
+// =========================================================
 
-// --- Sawdust Physics System ---
 const SawdustSystem = forwardRef<SawdustSystemHandle, {}>((props, ref) => {
     const meshRef = useRef<THREE.InstancedMesh>(null);
     const count = 1200; 
@@ -657,8 +963,6 @@ const SawdustSystem = forwardRef<SawdustSystemHandle, {}>((props, ref) => {
     );
 });
 
-// --- Geometry Definitions (Box) ---
-
 const extrudeSettingsJoint = { depth: BOARD_THICKNESS, bevelEnabled: false };
 
 const PinBoardMesh: React.FC<{doubleSided?: boolean}> = ({doubleSided = false}) => {
@@ -721,6 +1025,13 @@ const PinBoardMesh: React.FC<{doubleSided?: boolean}> = ({doubleSided = false}) 
     );
 };
 
+const tailShape = new THREE.Shape();
+tailShape.moveTo(-TAIL_WIDTH_TIP/2, JOINT_HEIGHT);
+tailShape.lineTo(-TAIL_WIDTH_ROOT/2, 0);
+tailShape.lineTo(TAIL_WIDTH_ROOT/2, 0);
+tailShape.lineTo(TAIL_WIDTH_TIP/2, JOINT_HEIGHT);
+tailShape.lineTo(-TAIL_WIDTH_TIP/2, JOINT_HEIGHT);
+
 const TailBoardMesh: React.FC = () => {
     const shape = useMemo(() => {
         const s = new THREE.Shape();
@@ -764,13 +1075,6 @@ const TailBoardMesh: React.FC = () => {
         </mesh>
     );
 };
-
-const tailShape = new THREE.Shape();
-tailShape.moveTo(-TAIL_WIDTH_TIP/2, JOINT_HEIGHT);
-tailShape.lineTo(-TAIL_WIDTH_ROOT/2, 0);
-tailShape.lineTo(TAIL_WIDTH_ROOT/2, 0);
-tailShape.lineTo(TAIL_WIDTH_TIP/2, JOINT_HEIGHT);
-tailShape.lineTo(-TAIL_WIDTH_TIP/2, JOINT_HEIGHT);
 
 const WasteBlock: React.FC<{position: [number, number, number], visible: boolean, isMarked: boolean}> = ({position, visible, isMarked}) => {
     if (!visible) return null;
